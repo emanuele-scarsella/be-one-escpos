@@ -10,7 +10,7 @@ use Mike42\Escpos\EscposImage;
 
 error_reporting(E_ERROR | E_PARSE);
 
-$test_mode = false;
+$test_mode = true;
 
 
 $error = false;
@@ -120,13 +120,14 @@ while (true) {
 
         if($open){
             openDoor();
+            updateBiglietti();
         }
 
         if ($tickets > 0) {
             printLog("[BIGLIETTI  ] print ".$ticket_index."/".($ticket_index + $tickets));
             printTicket();
             $tickets--;
-            
+
             updateBiglietti();
         }
 
@@ -263,8 +264,6 @@ function updateBiglietti() {
     global $ticket_index;
     global $img_id;
     global $open;
-
-    echo "update";
 
     try {
         
