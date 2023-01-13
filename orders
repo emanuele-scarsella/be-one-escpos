@@ -1,0 +1,476 @@
+#!/usr/bin/php
+<?php
+
+require __DIR__ . '/vendor/autoload.php';
+
+use Mike42\Escpos\PrintConnectors\FilePrintConnector;
+use Mike42\Escpos\PrintConnectors\NetworkPrintConnector;
+use Mike42\Escpos\Printer;
+use Mike42\Escpos\EscposImage;
+
+error_reporting(E_ERROR | E_PARSE);
+
+$test_mode = false;
+
+
+$error = false;
+
+$orders_ip = '';
+$drink_ip = '';
+$tickets = 0;
+$ticket_index = 1;
+$ticket_text = "";
+$t_size = 3;
+$img_url = '';
+$img_id = null;
+$open = false;
+
+$printer;
+$drink_printer;
+
+//##################################################   TEST CONNESSIONE SERVER
+try {
+    echo "Connessione al server in corso...\n";
+    config();
+    echo "Connesso al server\n\n";
+}
+catch (\Throwable $th) {
+    die(" [STARTUP    ]: ".$th->getMessage()."\n");
+}
+
+//##################################################   TEST CONNESSIONE STAMPANTI
+try {
+    echo "Connessione alle stampanti in corso...\n";
+    connectOrdinazioni();
+    echo "Connesso alla stamapnte ORDINAZIONI:  ".$orders_ip."\n";
+    $printer->close();
+    connectTickets();
+    echo "Connesso alla stamapnte BIGLIETTI:    ".$drink_ip."\n";
+    $drink_printer->close();
+    echo "\n\n\n";
+}
+catch (\Throwable $th) {
+    die(" [STARTUP    ]: Impossibile connettersi alle stampanti\n\nORDINAZIONI:  ".$orders_ip."\nBIGLIETTI:    ".$drink_ip."\n");
+}
+
+//##################################################   INIZIALIZZAZIONE
+try {
+    $ids = array_map('trim', file('./src/ids.txt', FILE_IGNORE_NEW_LINES));
+    $cancelled_ids = array_map('trim', file('./src/cancelled_ids.txt', FILE_IGNORE_NEW_LINES));
+
+    $resp = getOrdinazioni();
+    $docs = json_decode($resp)->docs;
+
+    foreach ($docs as $key => $ord) {
+        if (!in_array($ord->id,$ids)){
+            array_push($ids,$ord->id);
+            $file = fopen('./src/ids.txt', 'a');
+            fwrite($file, $ord->id . "\n");
+            fclose($file);
+        }
+        if ($ord->annullato && !in_array($ord->id,$cancelled_ids)){
+            array_push($cancelled_ids,$ord->id);
+            $file = fopen('./src/cancelled_ids.txt', 'a');
+            fwrite($file, $ord->id . "\n");
+            fclose($file);
+        }
+    }
+}
+catch (\Throwable $th) {
+    die(" [STARTUP    ]: Impossibile caricare la lista di IDs da './src/ids.txt' e './src/cancelled_ids.txt'. Verificarne l'integrità e riprovare.\n");
+}
+
+
+while (true) {
+
+    //#############################################################   STAMPA ORDINAZIONI
+
+    try {
+        connectOrdinazioni();
+        $resp = getOrdinazioni();
+        $docs = json_decode($resp)->docs;
+
+        foreach ($docs as $key => $ord) {
+            if (!in_array($ord->id,$ids) || ($ord->annullato && !in_array($ord->id,$cancelled_ids))) {
+                printOrd($ord);
+
+                if ($ord->annullato) {
+                    array_push($cancelled_ids,$ord->id);
+                    $file = fopen('./src/cancelled_ids.txt', 'a');
+                }
+                else{
+                    array_push($ids,$ord->id);
+                    $file = fopen('./src/ids.txt', 'a');
+                }
+                fwrite($file, $ord->id . "\n");
+                fclose($file);
+            }
+        }
+    }
+    catch (\Throwable $th) {
+        printLog("[ORDINAZIONI]: ".$th->getMessage());
+        $error = true;
+    }
+
+    //#############################################################   STAMPA BIGLIETTI
+
+    try {
+        config();
+        connectTickets();
+
+        if($open){
+            openDoor();
+        }
+
+        if ($tickets > 0) {
+            printLog("[BIGLIETTI  ] print ".$ticket_index."/".($ticket_index + $tickets));
+            printTicket();
+            $tickets--;
+            
+            updateBiglietti();
+        }
+
+    }
+    catch (\Throwable $th) {
+        printLog("[BIGLIETTI  ]: ".$th->getMessage());
+        $error = true;
+    }
+
+    $printer->close();
+    $drink_printer->close();
+
+    usleep(300 * 1000);
+
+    if (!$error) {
+        printLog('OK');
+    }
+    else{
+        $error = false;
+    }
+}
+
+function printLog(string $msg) {
+    $date = new DateTime("now",new DateTimeZone('Europe/Rome'));
+    $d = $date->format("d/M/Y H:i:s");
+    echo "[".$d."] ".$msg."\n";
+}
+
+function config() {
+
+    global $test_mode;
+
+    global $orders_ip ;
+    global $drink_ip ;
+    global $tickets ;
+    global $ticket_index ;
+    global $ticket_text ;
+    global $t_size ;
+    global $img_url ;
+    global $img_id;
+    global $open ;
+
+    try {
+        if ($test_mode) {
+            $url = "http://localhost:9254/api/globals/biglietti?depth=2";
+        }
+        else{
+            $url = "https://bambola.hycepanel.it/api/globals/biglietti?depth=2";
+        }
+    
+        $curl = curl_init($url);
+        curl_setopt($curl, CURLOPT_URL, $url);
+        curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($curl, CURLOPT_HTTPHEADER, [
+            'content-type: application/json'
+        ]);
+        curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, false);//for debug only!
+        curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);//for debug only!
+        $resp = curl_exec($curl);
+        curl_close($curl);
+        
+        $settings = json_decode($resp);
+
+        if(!$settings){
+            throw new Exception();
+        }
+
+        $orders_ip = $settings->orders_ip;
+        $drink_ip = $settings->drinks_ip;
+        $tickets = $settings->quantita;
+        $ticket_index = $settings->start;
+        $ticket_text = $settings->testo;
+        $t_size = (int)$settings->dimensione;
+        $open = $settings->open;
+        $img_id = null;
+        if (property_exists($settings,'icon') && $settings->icon) {
+            $img_id = $settings->icon->id;
+            if (property_exists($settings->icon->sizes->image,'url')){
+                $img_url = $settings->icon->sizes->image->url;
+            }
+            else{
+                $img_url = $settings->icon->url;
+            }
+        }
+        else{
+            $img_url = '';
+        }
+    }
+    catch (\Throwable $th) {
+        throw new Exception("Connessione al server fallita");
+    }
+    
+}
+
+function getOrdinazioni() {
+
+    global $test_mode;
+
+    try {
+        
+        if ($test_mode) {
+            $url = "http://localhost:9254/api/ordinazione/?limit=100&depth=3&sort=-createdAt";
+        }
+        else{
+            $url = "https://bambola.hycepanel.it/api/ordinazione/?limit=100&depth=3&sort=-createdAt";
+        }
+
+        $curl = curl_init($url);
+        curl_setopt($curl, CURLOPT_URL, $url);
+        curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($curl, CURLOPT_HTTPHEADER, [
+            'content-type: application/json'
+        ]);
+        curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, false);//for debug only!
+        curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);//for debug only!
+        $resp = curl_exec($curl);
+        curl_close($curl);
+
+        if (!$resp) {
+            throw new Exception();
+        }
+
+        return $resp;
+    }
+    catch (\Throwable $th) {
+        throw new Exception("Connessione al server fallita");
+    }
+}
+
+function updateBiglietti() {
+
+    global $test_mode;
+    global $tickets;
+    global $ticket_index;
+    global $img_id;
+    global $open;
+
+    echo "update";
+
+    try {
+        
+        if ($test_mode) {
+            $url = "http://localhost:9254/api/globals/biglietti";
+        }
+        else{
+            $url = "https://bambola.hycepanel.it/api/globals/biglietti";
+        }
+
+        $curl = curl_init($url);
+        curl_setopt($curl, CURLOPT_URL, $url);
+        curl_setopt($curl, CURLOPT_POSTFIELDS, json_encode([
+            "quantita" => $tickets,
+            "start" => $ticket_index,
+            "icon" => $img_id,
+            "open" => $open
+        ]));
+        curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($curl, CURLOPT_HTTPHEADER, [
+            'content-type: application/json'
+        ]);
+        curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, false);//for debug only!
+        curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);//for debug only!
+        curl_exec($curl);
+        curl_close($curl);
+    }
+    catch (\Throwable $th) {
+        throw new Exception("Connessione al server fallita");
+    }
+}
+
+function printOrd($ord) {
+
+    global $printer;
+
+    try {
+
+        $printer -> setJustification(Printer::JUSTIFY_CENTER);
+        $printer -> setDoubleStrike(true);
+
+        if($ord->annullato){
+            $printer -> setTextSize(3,3);
+            $printer -> text("!!!!!!!!!!!!!!!\n!!!ANNULLATO!!!\n!!!!!!!!!!!!!!!\n\n");
+        }
+        
+        $printer -> setTextSize(2,2);
+        if(property_exists($ord,'prenotazione')){
+            $printer -> text('TAVOLO '.$ord->prenotazione->tavolo->numero."\n");
+            $printer -> text($ord->prenotazione->nome."\n\n");
+        }
+        else{
+            $printer -> text("ORDINE SENZA TAVOLO \n\n");
+        }
+    
+        $printer -> setDoubleStrike(false);
+        $printer -> setJustification(Printer::JUSTIFY_LEFT);
+        $printer -> text("________________________\n\n");
+    
+    
+        foreach ($ord->prodotti as $key => $prod) {
+    
+            $printer -> setTextSize(2,3);
+            $printer -> setDoubleStrike(true);
+            $printer -> text($prod->quantita."  ".$prod->prodotto->nome."\n");
+            if($prod->note != ""){
+                $printer -> setTextSize(2,2);
+                $printer -> text("   - ".$prod->note."\n\n");
+            }
+            else{
+                $printer->text("\n");
+            }
+        }
+    
+        $printer -> setTextSize(2,2);
+        $printer -> text("________________________\n");
+    
+    
+        $printer -> setDoubleStrike(false);
+        $printer -> setTextSize(2,2);
+        $printer -> text("\n");
+        $printer -> text("Subtotale:  ".$ord->costo."\n");
+        $printer -> text("Sconto:  ".$ord->sconto."\n");
+        //$printer -> text("totale:  ".$ord->costo_scontato."\n\n");
+        $printer -> setTextSize(3,3);
+    
+        if(property_exists($ord,'prenotazione')){
+            $printer -> text("TOTALE:  ".(max((float)$ord->costo_scontato - max(((float)($ord->prenotazione->budget) - (float)($ord->prenotazione->speso)), 0),0))."\n\n\n");
+        }
+        else{
+            $printer -> text("TOTALE:  ".$ord->costo_scontato."\n\n\n");
+        }
+    
+        $printer -> setTextSize(2,2);
+        $printer -> text("\n");
+        $printer -> text("Mittente: ".$ord->autore."\n\n");
+    
+        $printer -> setTextSize(1,1);
+        $printer -> setJustification(Printer::JUSTIFY_CENTER);
+        $printer -> text($ord->createdAt);
+    
+        $printer -> text("\n\n\n");
+        $printer->cut(Printer::CUT_FULL);
+    }
+    catch (\Throwable $th) {
+        throw new Exception("ERRORE IN FASE DI STAMPA: ".$th->getMessage());
+    }
+}
+
+function printTicket() {
+
+    $arrContextOptions=array(
+        "ssl"=>array(
+            "verify_peer"=>false,
+            "verify_peer_name"=>false,
+        ),
+    ); 
+
+    global $img_url;
+    global $drink_printer;
+    global $t_size;
+    global $ticket_text;
+    global $ticket_index;
+
+    if ($img_url != '') {
+        $imgdata = file_get_contents($img_url, false, stream_context_create($arrContextOptions));
+        file_put_contents("./src/img.png", $imgdata);
+        $img = EscposImage::load("./src/img.png");
+    }
+
+    $date = new DateTime("now",new DateTimeZone('Europe/Rome'));
+    $drink_printer -> setJustification(Printer::JUSTIFY_CENTER);
+    $drink_printer -> setDoubleStrike(true);
+    $d = $date->format("d/M/Y");
+
+    if ($img_url != '') {
+        $drink_printer -> bitImage($img, 3);
+    }
+    $drink_printer -> text("\n\n");
+
+    $drink_printer -> setTextSize($t_size,$t_size);
+    $drink_printer -> text($ticket_text."\n\n");
+    
+    $drink_printer -> setTextSize(3,3);
+    $drink_printer -> text($d."\n\n");
+
+    $drink_printer -> setTextSize(1,1); 
+    $drink_printer -> text($ticket_index."\n\n");
+    
+    $drink_printer -> cut(Printer::CUT_FULL);
+
+    $ticket_index++;
+}
+
+function openDoor() {
+
+    global $printer;
+    global $drink_ip;
+    global $open;
+
+    $printer->pulse(0,120,240);
+    
+    printLog("[REGISTER   ] Door opened at ".$drink_ip);
+
+    $open = false;
+}
+
+function connectOrdinazioni() {
+
+    global $test_mode;
+    global $orders_ip;
+    global $printer;
+
+    try {
+        if ($test_mode) {
+            $connector = new FilePrintConnector("php://stdout");
+        }
+        else{
+            $connector = new NetworkPrintConnector($orders_ip, 9100);
+        }
+        $printer = new Printer($connector);
+    }
+    catch (\Throwable $th) {
+        throw new Exception( "Connessione alla stampante fallita");
+    }
+}
+
+function connectTickets() {
+
+    global $test_mode;
+    global $drink_ip;
+    global $drink_printer;
+
+    try {
+        if ($test_mode) {
+            $connector = new FilePrintConnector("php://stdout");
+        }
+        else{
+            $connector = new NetworkPrintConnector($drink_ip, 9100);
+        }
+        $drink_printer = new Printer($connector);
+    }
+    catch (\Throwable $th) {
+        throw new Exception("Connessione alla stampante fallita");
+    }
+}
+
+
+?>
