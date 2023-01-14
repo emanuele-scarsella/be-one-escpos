@@ -17,6 +17,7 @@ $error = false;
 
 $orders_ip = '';
 $drink_ip = '';
+$ticket_type = 'custom';
 $tickets = 0;
 $ticket_index = 1;
 $ticket_text = "";
@@ -125,7 +126,12 @@ while (true) {
 
         if ($tickets > 0) {
             printLog("[BIGLIETTI  ] print ".$ticket_index."/".($ticket_index + $tickets));
-            printTicket();
+            if ($ticket_type == 'custom') {
+                printTicket();
+            }
+            else{
+                printScontrino();
+            }
             $tickets--;
 
             updateBiglietti();
@@ -162,6 +168,7 @@ function config() {
 
     global $orders_ip ;
     global $drink_ip ;
+    global $ticket_type;
     global $tickets ;
     global $ticket_index ;
     global $ticket_text ;
@@ -197,6 +204,7 @@ function config() {
 
         $orders_ip = $settings->orders_ip;
         $drink_ip = $settings->drinks_ip;
+        $ticket_type = $settings->type;
         $tickets = $settings->quantita;
         $ticket_index = $settings->start;
         $ticket_text = $settings->testo;
@@ -416,6 +424,35 @@ function printTicket() {
     $drink_printer -> cut(Printer::CUT_FULL);
 
     $ticket_index++;
+}
+
+function printScontrino() {
+
+    global $drink_printer;
+
+    $date = new DateTime("now",new DateTimeZone('Europe/Rome'));
+    $d = $date->format("d/M/Y H:i");
+    $drink_printer -> setJustification(Printer::JUSTIFY_CENTER);
+    $drink_printer -> setDoubleStrike(true);
+    $drink_printer -> setTextSize(1,2);
+    $drink_printer -> text("BE ONE SRL\n");
+    $drink_printer -> setDoubleStrike(false);
+    $drink_printer -> setTextSize(1,1);
+    $drink_printer -> text("VIA UGO LA MALFA SN\n");
+    $drink_printer -> text("67100 L'AQUILA\n");
+    $drink_printer -> text("P.IVA 01872320666\n\n\n");
+    $drink_printer -> setJustification(Printer::JUSTIFY_LEFT);
+    $drink_printer -> text("OPERATORE: amministratore\n\n");
+    $drink_printer -> text("1 X DRINK 7                                 7,00\n");
+    $drink_printer -> setJustification(Printer::JUSTIFY_LEFT);
+    $drink_printer -> text("- - - - - - - - - - - - - - - - - - - - - - - - \n");
+    $drink_printer -> setDoubleStrike(true);
+    $drink_printer -> setTextSize(1,2);
+    $drink_printer -> text("TOTALE EURO                                 7,00\n\n\n");
+    $drink_printer -> setDoubleStrike(false);
+    $drink_printer -> setTextSize(1,1);
+    $drink_printer -> text($d."\n\n");
+    $drink_printer -> cut(Printer::CUT_FULL);
 }
 
 function openDoor() {
