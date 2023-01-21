@@ -214,13 +214,10 @@ function config() {
         if (property_exists($settings,'icon') && $settings->icon) {
             $img_id = $settings->icon->id;
 
-            var_dump(
-                var_dump($settings->icon->sizes->image));
-
-            /*if (property_exists($settings->icon->sizes->image,'url')){
+            if (property_exists($settings->icon,'sizes') && property_exists($settings->icon->sizes,'image') && property_exists($settings->icon->sizes->image,'url')){
                 $img_url = $settings->icon->sizes->image->url;
             }
-            else*/if (true){
+            else {
                 $img_url = $settings->icon->url;
             }
         }
