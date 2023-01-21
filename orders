@@ -10,7 +10,7 @@ use Mike42\Escpos\EscposImage;
 
 error_reporting(E_ERROR | E_PARSE);
 
-$test_mode = true;
+$test_mode = false;
 
 
 $error = false;
@@ -213,10 +213,14 @@ function config() {
         $img_id = null;
         if (property_exists($settings,'icon') && $settings->icon) {
             $img_id = $settings->icon->id;
-            if (property_exists($settings->icon->sizes->image,'url')){
+
+            var_dump(
+                var_dump($settings->icon->sizes->image));
+
+            /*if (property_exists($settings->icon->sizes->image,'url')){
                 $img_url = $settings->icon->sizes->image->url;
             }
-            else{
+            else*/if (true){
                 $img_url = $settings->icon->url;
             }
         }
@@ -225,7 +229,7 @@ function config() {
         }
     }
     catch (\Throwable $th) {
-        throw new Exception("Connessione al server fallita");
+        throw $th;//new Exception("Connessione al server fallita");
     }
     
 }
